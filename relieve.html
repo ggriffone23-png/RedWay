@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mapa de relieve · ARES</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="page with-side">
+    <section class="map-card" aria-labelledby="title">
+      <div class="map-head chrome">
+        <div>
+          <p class="eyebrow">Topografía global</p>
+          <h1 id="title">Mapa de relieve</h1>
+        </div>
+        <div class="controls">
+          <label>Paleta
+            <select id="pal">
+              <option value="ares">Azul ARES</option>
+              <option value="mola">Clásica MOLA</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="shade" checked> Sombreado</label>
+          <label><input type="checkbox" id="labels" checked> Lugares</label>
+          <label><input type="checkbox" id="grid" checked> Retícula</label>
+        </div>
+      </div>
+      <div class="map-wrap">
+        <canvas id="map" role="img" aria-label="Mapa de relieve de Marte. Arrastra para moverte, usa la rueda o las teclas más y menos para acercar."></canvas>
+        <div class="zoom chrome">
+          <button type="button" data-z="in" aria-label="Acercar">+</button>
+          <button type="button" data-z="out" aria-label="Alejar">−</button>
+          <button type="button" data-z="reset" aria-label="Restablecer vista">⌂</button>
+        </div>
+        <div class="loading" id="loading">Generando modelo de elevación…</div>
+      </div>
+      <div class="readout chrome" aria-live="polite">
+        <span>Lat <b id="rLat">—</b></span>
+        <span>Lon <b id="rLon">—</b></span>
+        <span>Elevación <b id="rVal">—</b></span>
+      </div>
+      <div class="legend chrome"><span>−9 km</span><div class="bar" id="legend"></div><span>+22 km</span></div>
+    </section>
+
+    <aside class="side chrome">
+      <div class="panel" id="info">
+        <p class="eyebrow" id="iType">Detalle</p>
+        <h2 id="iName">Selecciona un lugar</h2>
+        <p class="muted" id="iDesc">Haz clic en un marcador del mapa, en la lista o en cualquier punto del terreno.</p>
+        <dl class="kv" id="iKv" hidden>
+          <dt>Latitud</dt><dd id="iLat"></dd>
+          <dt>Longitud</dt><dd id="iLon"></dd>
+          <dt>Elevación</dt><dd id="iElev"></dd>
+        </dl>
+        <div class="actions" id="iActions"></div>
+      </div>
+      <div class="panel">
+        <h2>Lugares de interés</h2>
+        <ul class="site-list" id="sites"></ul>
+      </div>
+      <div class="panel">
+        <h2>Otros mapas</h2>
+        <nav class="links" aria-label="Otros mapas">
+          <a href="temperatura.html">Mapa de temperatura →</a>
+          <a href="ruta.html">Guía de rutas →</a>
+          <a href="inicio.html">← Volver al inicio</a>
+        </nav>
+      </div>
+    </aside>
+  </main>
+
+  <script src="./mars.js"></script>
+  <script>
+    (function () {
+      ARES.announce("relieve");
+      const $ = (id) => document.getElementById(id);
+      const RES = ARES.isMini ? [512, 256] : [1024, 512];
+      let G = null, base = null, selected = null, picked = null;
+
+      const ui = { pal: $("pal"), shade: $("shade"), labels: $("labels"), grid: $("grid") };
+
+      const map = ARES.MapView($("map"), {
+        base: () => base,
+        overlay(ctx, m) {
+          if (ui.grid.checked) m.graticule();
+          if (picked) {
+            const p = m.project(picked.lat, picked.lon);
+            m.copies(p.x, (x) => ARES.drawMarker(ctx, x, p.y, "#a6d4ff", 4, true));
+          }
+          if (!ui.labels.checked) return;
+          ARES.SITES.forEach((s) => {
+            const p = m.project(s.lat, s.lon);
+            const isSel = selected && selected.id === s.id;
+            m.copies(p.x, (x) => {
+              ARES.drawMarker(ctx, x, p.y, s.id === "base" ? "#2f7de1" : "#e0703f", isSel ? 6 : 5, isSel);
+              if (!ARES.isMini) ARES.drawLabel(ctx, x, p.y, s.name);
+            });
+          });
+        },
+        onHover(ll) {
+          if (!ll) { $("rLat").textContent = $("rLon").textContent = $("rVal").textContent = "—"; return; }
+          $("rLat").textContent = ARES.fmtLat(ll.lat);
+          $("rLon").textContent = ARES.fmtLon(ll.lon);
+          $("rVal").textContent = ARES.elevAt(ll.lat, ll.lon).toFixed(2) + " km";
+        },
+        onClick(ll, sx, sy) {
+          const s = ARES.nearestSite(map, sx, sy);
+          if (s) select(s);
+          else if (ll) select(ARES.customLoc(ll.lat, ll.lon), true);
+        },
+      });
+      ARES.bindZoom(document, map);
+
+      function renderBase() {
+        base = ARES.renderRelief(G, ui.pal.value, ui.shade.checked);
+        $("legend").style.background = ARES.cssGradient(ARES.PALETTES[ui.pal.value], -9, 22);
+        map.schedule();
+      }
+
+      function select(loc, isCustom) {
+        selected = isCustom ? null : loc;
+        picked = isCustom ? loc : null;
+        const elev = ARES.elevAt(loc.lat, loc.lon);
+        $("iType").textContent = loc.type;
+        $("iName").textContent = loc.name;
+        $("iDesc").textContent = loc.desc || "Punto elegido sobre el terreno.";
+        $("iKv").hidden = false;
+        $("iLat").textContent = ARES.fmtLat(loc.lat);
+        $("iLon").textContent = ARES.fmtLon(loc.lon);
+        $("iElev").textContent = elev.toFixed(2) + " km";
+        $("iActions").innerHTML =
+          `<a class="btn small" href="ruta.html?from=${encodeURIComponent(loc.id)}">Ruta desde aquí</a>` +
+          `<a class="btn small ghost" href="ruta.html?to=${encodeURIComponent(loc.id)}">Ruta hasta aquí</a>` +
+          `<a class="btn small ghost" href="temperatura.html?focus=${encodeURIComponent(loc.id)}">Ver temperatura</a>`;
+        document.querySelectorAll("#sites button").forEach((b) => b.setAttribute("aria-pressed", String(!!selected && b.dataset.id === selected.id)));
+        map.schedule();
+      }
+
+      $("sites").innerHTML = ARES.SITES.map((s) =>
+        `<li><button type="button" data-id="${s.id}" aria-pressed="false"><span>${s.name}</span><span class="tag">${s.type}</span></button></li>`
+      ).join("");
+      $("sites").addEventListener("click", (e) => {
+        const b = e.target.closest("button");
+        if (!b) return;
+        const s = ARES.SITES.find((x) => x.id === b.dataset.id);
+        select(s);
+        map.centerOn(s.lat, s.lon, Math.max(map.view.scale, 2.5));
+      });
+
+      ui.pal.addEventListener("change", renderBase);
+      ui.shade.addEventListener("change", renderBase);
+      ui.labels.addEventListener("change", map.schedule);
+      ui.grid.addEventListener("change", map.schedule);
+
+      setTimeout(() => {
+        G = ARES.grid(RES[0], RES[1]);
+        renderBase();
+        $("loading").hidden = true;
+        const focus = ARES.parseLoc(ARES.params.get("focus"));
+        if (focus) { select(focus, !!focus.custom); map.centerOn(focus.lat, focus.lon, 2.5); }
+      }, 30);
+    })();
+  </script>
+</body>
+</html>
